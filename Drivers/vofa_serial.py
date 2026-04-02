@@ -1,3 +1,11 @@
+"""
+模块名称：vofa_serial.py
+功能说明：封装面向 VOFA+ 的串口发送驱动，支持单次发送与后台定频发送
+输入：VofaSerialConfig 配置对象、上层更新的数值数据
+输出：串口文本数据流
+依赖项：pyserial
+"""
+
 from dataclasses import dataclass
 from threading import Lock, Thread
 from typing import Optional

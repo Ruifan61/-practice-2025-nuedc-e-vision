@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 *.so
+out/*
+!out/.gitkeep
 
 .settings/
 .DS_Store

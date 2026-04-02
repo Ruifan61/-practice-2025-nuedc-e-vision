@@ -1,3 +1,11 @@
+"""
+模块名称：camera.py
+功能说明：封装 Picamera2 相机初始化、3A/手动曝光控制、预览显示与帧回调接口
+输入：CameraConfig 配置对象、上层注册的帧回调函数
+输出：BGR 图像帧、同步抓帧结果
+依赖项：picamera2、libcamera、cv2
+"""
+
 from dataclasses import dataclass
 from typing import Optional
 

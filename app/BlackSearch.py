@@ -1,3 +1,11 @@
+"""
+模块名称：BlackSearch.py
+功能说明：实现黑框目标识别、筛选、跟踪预测与调试输出
+输入：相机驱动提供的 BGR 图像帧
+输出：目标中心坐标、终端日志、可选 VOFA 串口数据
+依赖项：Drivers.camera、Drivers.vofa_serial、cv2、numpy
+"""
+
 import datetime
 import math
 import os
@@ -353,5 +361,10 @@ class UltimateHighSpeedTracker:
             self.vofa.close()
 
 
+def main():
+    tracker = UltimateHighSpeedTracker()
+    tracker.run()
+
+
 if __name__ == "__main__":
-    UltimateHighSpeedTracker().run()
+    main()
