@@ -14,6 +14,7 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
 from Drivers.camera import Camera, CameraConfig
+from Drivers.vofa_serial import VofaSerial, VofaSerialConfig
 
 
 # 相机相关配置下沉到驱动配置对象里，应用层只声明自己需要的相机行为。
@@ -30,6 +31,13 @@ CAMERA_CONFIG = CameraConfig(
     manual_exposure_us=4000,
     manual_analog_gain=8.0,
     frame_duration_us=int(1_000_000 / 60),
+)
+
+VOFA_ENABLE = True
+VOFA_CONFIG = VofaSerialConfig(
+    port="/dev/serial0",
+    baudrate=115200,
+    send_hz=20.0,
 )
 
 # 跟踪参数：用于在“已经找到过目标”的前提下缩小搜索范围。
@@ -90,6 +98,7 @@ def get_center_black_mean(mask, cx, cy, patch_size):
 class UltimateHighSpeedTracker:
     def __init__(self):
         self.camera = Camera(CAMERA_CONFIG)
+        self.vofa = VofaSerial(VOFA_CONFIG) if VOFA_ENABLE else None
         # last_center / velocity / lost_count 共同构成一个轻量级追踪器：
         # 找到目标时更新位置和速度，短时丢失时靠速度外推顶几帧。
         self.last_center = None
@@ -241,6 +250,8 @@ class UltimateHighSpeedTracker:
             f"[{now}] [TARGET] X:{center[0]:3d} Y:{center[1]:3d} | "
             f"耗时:{cost_ms:3.0f}ms | 帧率: {self.current_fps:4.1f} FPS"
         )
+        if self.vofa is not None:
+            self.vofa.update_latest(center[0], center[1], round(self.current_fps, 2))
 
     def _log_predict(self, center):
         now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -248,10 +259,14 @@ class UltimateHighSpeedTracker:
             f"[{now}] [PREDICT] X:{center[0]:3d} Y:{center[1]:3d} | "
             f"帧率: {self.current_fps:4.1f} FPS"
         )
+        if self.vofa is not None:
+            self.vofa.update_latest(center[0], center[1], round(self.current_fps, 2))
 
     def _log_lost(self):
         now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         print(f"[{now}] [LOST] 等待目标... | 帧率: {self.current_fps:4.1f} FPS")
+        if self.vofa is not None:
+            self.vofa.update_latest(-1, -1, round(self.current_fps, 2))
 
     def _process_loop(self):
         while self.is_running:
@@ -305,9 +320,15 @@ class UltimateHighSpeedTracker:
     def run(self):
         # Camera 内部会把 Picamera2 的 post_callback 挂到这里；
         # 也就是“相机线程产帧 -> _callback 入队 -> 处理线程识别”这条链路。
+        if self.vofa is not None and not self.vofa.start():
+            print("VOFA 串口启动失败，已跳过串口发送。")
+            self.vofa = None
+
         self.camera.set_callback(self._callback)
         if not self.camera.open():
             print("摄像头启动失败，BlackSearch 无法运行。")
+            if self.vofa is not None:
+                self.vofa.close()
             return
 
         # 识别放到独立线程里，主线程只负责保活和响应 Ctrl+C。
@@ -328,6 +349,8 @@ class UltimateHighSpeedTracker:
 
         process_thread.join(timeout=1.0)
         self.camera.close()
+        if self.vofa is not None:
+            self.vofa.close()
 
 
 if __name__ == "__main__":
