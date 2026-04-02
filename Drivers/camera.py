@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Optional
+
 import cv2 as cv
 import re
 import subprocess
@@ -13,11 +16,35 @@ except ImportError:
     DrmPreview = None
 
 
+@dataclass(slots=True)
+class CameraConfig:
+    main_size: tuple[int, int] = (640, 480)
+    fps: int = 60
+
+    enable_preview: bool = True
+    preview_fullscreen: bool = True
+    preview_x: int = 0
+    preview_y: int = 0
+    preview_width: Optional[int] = None
+    preview_height: Optional[int] = None
+
+    use_manual_camera: bool = False
+    manual_exposure_us: Optional[int] = None
+    manual_analog_gain: Optional[float] = None
+    frame_duration_us: Optional[int] = None
+
+    enable_3a: bool = True
+    enable_awb: bool = True
+    enable_af: bool = False
+    af_mode: str = "continuous"
+
+
 class Camera:
-    def __init__(self):
+    def __init__(self, config: Optional[CameraConfig] = None):
         self.picam2 = None
         self.is_opened = False
-        self.main_size = (640, 480)
+        self.config = config or CameraConfig()
+        self.main_size = self.config.main_size
         # 上层把识别函数挂到这里；每来一帧就会走一次回调。
         self.callback = None
 
@@ -63,30 +90,71 @@ class Camera:
             pass
         return None, None
 
-    def open(
-        self,
-        main_size=(640, 480),
-        fps=60,
-        enable_preview=True,
-        use_manual_camera=False,
-        manual_exposure_us=None,
-        manual_analog_gain=None,
-        frame_duration_us=None,
-        enable_3a=True,
-        enable_awb=True,
-        enable_af=False,
-        af_mode="continuous",
-        preview_fullscreen=True,
-        preview_x=0,
-        preview_y=0,
-        preview_width=None,
-        preview_height=None,
-    ):
+    def _build_controls(self, config: CameraConfig):
+        controls = {}
+        if config.use_manual_camera:
+            # 比赛或固定光照场景下，用手动曝光把相机“锁死”。
+            # 这样可以显著减少自动曝光导致的亮度跳变，
+            # 对后面的 Otsu 阈值分割和黑框黑度判断更友好。
+            if config.frame_duration_us is not None:
+                controls["FrameDurationLimits"] = (
+                    config.frame_duration_us,
+                    config.frame_duration_us,
+                )
+            controls["AeEnable"] = False
+            if config.manual_exposure_us is not None:
+                controls["ExposureTime"] = config.manual_exposure_us
+            if config.manual_analog_gain is not None:
+                controls["AnalogueGain"] = config.manual_analog_gain
+            return controls
+
+        # 3A 属于 libcamera/ISP 管线的一部分，处理结果会直接体现在
+        # 后面拿到的主图像流里，所以显示和识别看到的是同一套自动调节结果。
+        controls["FrameRate"] = config.fps
+        controls["AeEnable"] = bool(config.enable_3a)
+        controls["AwbEnable"] = bool(config.enable_3a and config.enable_awb)
+
+        if config.enable_3a and config.enable_af:
+            resolved_af_mode = self._resolve_af_mode(config.af_mode)
+            if resolved_af_mode is not None:
+                controls["AfMode"] = resolved_af_mode
+        return controls
+
+    def _start_preview(self, config: CameraConfig):
+        if not config.enable_preview or DrmPreview is None:
+            return
+
+        # DRM 预览是直接走显示硬件的，不经过 OpenCV 窗口。
+        # 它的作用主要是“看画面是否正常”，而不是给识别线程供图。
+        # 所以开预览不会改变识别输入，只是增加一个底层显示通路。
+        drm_width = config.preview_width
+        drm_height = config.preview_height
+        if config.preview_fullscreen and (drm_width is None or drm_height is None):
+            detected_width, detected_height = self._detect_drm_preview_size()
+            drm_width = detected_width or config.main_size[0]
+            drm_height = detected_height or config.main_size[1]
+        elif drm_width is None or drm_height is None:
+            drm_width = config.main_size[0]
+            drm_height = config.main_size[1]
+
+        self.picam2.start_preview(
+            DrmPreview(
+                x=config.preview_x,
+                y=config.preview_y,
+                width=drm_width,
+                height=drm_height,
+            )
+        )
+
+    def open(self, config: Optional[CameraConfig] = None):
         if self.is_opened:
             return True
 
         try:
-            self.main_size = main_size
+            if config is not None:
+                self.config = config
+
+            self.main_size = self.config.main_size
             self.picam2 = Picamera2()
             # 这里让 Picamera2 直接输出 BGR888。
             # 这样 BlackSearch 收到的就是 OpenCV 可直接处理的格式，
@@ -96,54 +164,8 @@ class Camera:
             )
             self.picam2.configure(config)
 
-            controls = {}
-            if use_manual_camera:
-                # 比赛或固定光照场景下，用手动曝光把相机“锁死”。
-                # 这样可以显著减少自动曝光导致的亮度跳变，
-                # 对后面的 Otsu 阈值分割和黑框黑度判断更友好。
-                if frame_duration_us is not None:
-                    controls["FrameDurationLimits"] = (frame_duration_us, frame_duration_us)
-                controls["AeEnable"] = False
-                if manual_exposure_us is not None:
-                    controls["ExposureTime"] = manual_exposure_us
-                if manual_analog_gain is not None:
-                    controls["AnalogueGain"] = manual_analog_gain
-            else:
-                # 3A 属于 libcamera/ISP 管线的一部分，处理结果会直接体现在
-                # 后面拿到的主图像流里，所以显示和识别看到的是同一套自动调节结果。
-                controls["FrameRate"] = fps
-                controls["AeEnable"] = bool(enable_3a)
-                controls["AwbEnable"] = bool(enable_3a and enable_awb)
-
-                if enable_3a and enable_af:
-                    resolved_af_mode = self._resolve_af_mode(af_mode)
-                    if resolved_af_mode is not None:
-                        controls["AfMode"] = resolved_af_mode
-
-            self._apply_controls(controls)
-
-            if enable_preview and DrmPreview is not None:
-                # DRM 预览是直接走显示硬件的，不经过 OpenCV 窗口。
-                # 它的作用主要是“看画面是否正常”，而不是给识别线程供图。
-                # 所以开预览不会改变识别输入，只是增加一个底层显示通路。
-                drm_width = preview_width
-                drm_height = preview_height
-                if preview_fullscreen and (drm_width is None or drm_height is None):
-                    detected_width, detected_height = self._detect_drm_preview_size()
-                    drm_width = detected_width or main_size[0]
-                    drm_height = detected_height or main_size[1]
-                elif drm_width is None or drm_height is None:
-                    drm_width = main_size[0]
-                    drm_height = main_size[1]
-
-                self.picam2.start_preview(
-                    DrmPreview(
-                        x=preview_x,
-                        y=preview_y,
-                        width=drm_width,
-                        height=drm_height,
-                    )
-                )
+            self._apply_controls(self._build_controls(self.config))
+            self._start_preview(self.config)
 
             if self.callback is not None:
                 # post_callback 由 Picamera2 在底层取到新帧后触发。

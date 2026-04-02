@@ -13,25 +13,24 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-from Drivers.camera import Camera
+from Drivers.camera import Camera, CameraConfig
 
 
-# 相机侧参数：决定输入分辨率和目标帧率。
-FRAME_SIZE = (640, 480)
-TARGET_FPS = 60
-
-# 3A 模式：AE / AWB / AF 都发生在 libcamera + ISP 这条采集管线里，
-# 调整结果会直接反映到后面的显示和识别输入。
-USE_MANUAL_CAMERA = False
-ENABLE_3A = True
-ENABLE_AWB = True
-ENABLE_AF = False
-AF_MODE = "continuous"
-
-# 手动模式参数：固定光照下仍然可以切回手动锁定。
-MANUAL_EXPOSURE_US = 4000
-MANUAL_ANALOG_GAIN = 8.0
-FRAME_DURATION_US = int(1_000_000 / TARGET_FPS)
+# 相机相关配置下沉到驱动配置对象里，应用层只声明自己需要的相机行为。
+CAMERA_CONFIG = CameraConfig(
+    main_size=(640, 480),
+    fps=60,
+    enable_preview=True,
+    preview_fullscreen=True,
+    use_manual_camera=False,
+    enable_3a=True,
+    enable_awb=True,
+    enable_af=False,
+    af_mode="continuous",
+    manual_exposure_us=4000,
+    manual_analog_gain=8.0,
+    frame_duration_us=int(1_000_000 / 60),
+)
 
 # 跟踪参数：用于在“已经找到过目标”的前提下缩小搜索范围。
 DETECT_SCALE = 4
@@ -90,7 +89,7 @@ def get_center_black_mean(mask, cx, cy, patch_size):
 
 class UltimateHighSpeedTracker:
     def __init__(self):
-        self.camera = Camera()
+        self.camera = Camera(CAMERA_CONFIG)
         # last_center / velocity / lost_count 共同构成一个轻量级追踪器：
         # 找到目标时更新位置和速度，短时丢失时靠速度外推顶几帧。
         self.last_center = None
@@ -307,19 +306,7 @@ class UltimateHighSpeedTracker:
         # Camera 内部会把 Picamera2 的 post_callback 挂到这里；
         # 也就是“相机线程产帧 -> _callback 入队 -> 处理线程识别”这条链路。
         self.camera.set_callback(self._callback)
-        if not self.camera.open(
-            main_size=FRAME_SIZE,
-            fps=TARGET_FPS,
-            enable_preview=True,
-            use_manual_camera=USE_MANUAL_CAMERA,
-            manual_exposure_us=MANUAL_EXPOSURE_US,
-            manual_analog_gain=MANUAL_ANALOG_GAIN,
-            frame_duration_us=FRAME_DURATION_US,
-            enable_3a=ENABLE_3A,
-            enable_awb=ENABLE_AWB,
-            enable_af=ENABLE_AF,
-            af_mode=AF_MODE,
-        ):
+        if not self.camera.open():
             print("摄像头启动失败，BlackSearch 无法运行。")
             return
 
