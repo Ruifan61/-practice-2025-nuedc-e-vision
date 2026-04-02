@@ -6,41 +6,44 @@
 
 ```mermaid
 flowchart TD
-    A["相机传感器原始数据<br/>Bayer / ISP 内部格式"]
-        --> B["Picamera2.create_video_configuration"]
-    B --> C["main stream 配置<br/>BGR888"]
-    C --> D["Picamera2.start"]
-    D --> E["产生主图像流<br/>BGR888"]
+    A["Sensor 输出<br/>RAW Bayer (GBRG, 10-bit)"]
+        --> B["ISP 处理<br/>3A / 去马赛克 / 颜色处理"]
+    B --> C["Picamera2.create_video_configuration"]
+    C --> D["main stream 配置<br/>BGR888"]
+    D --> E["Picamera2.start"]
+    E --> F["产生主图像流<br/>BGR888"]
 
-    E --> F["DrmPreview 预览显示"]
-    F --> G["屏幕显示"]
+    F --> G["DrmPreview 预览显示"]
+    G --> H["屏幕显示"]
 
-    E --> H["post_callback"]
-    H --> I["MappedArray(request, main)"]
-    I --> J["mapped.array.copy"]
-    J --> K["frame_bgr<br/>BGR888 / HxWx3"]
-    K --> L["frame_queue<br/>仍然是 BGR"]
-    L --> M["_process_loop 取帧<br/>BGR"]
-    M --> N["ROI 裁剪<br/>仍然是 BGR"]
-    N --> O["resize 缩小<br/>仍然是 BGR"]
-    O --> P["cvtColor BGR2GRAY<br/>GRAY"]
-    P --> Q["GaussianBlur<br/>GRAY"]
-    Q --> R["BlackHat<br/>GRAY"]
-    R --> S["threshold + Otsu<br/>Binary MASK"]
-    S --> T["findContours<br/>轮廓层级信息"]
-    T --> U["几何筛选 / 孔洞筛选 / 黑度筛选"]
-    U --> V["best_center<br/>输出坐标"]
+    F --> I["post_callback"]
+    I --> J["MappedArray(request, main)"]
+    J --> K["mapped.array.copy"]
+    K --> L["frame_bgr<br/>BGR888 / HxWx3"]
+    L --> M["frame_queue<br/>仍然是 BGR"]
+    M --> N["_process_loop 取帧<br/>BGR"]
+    N --> O["ROI 裁剪<br/>仍然是 BGR"]
+    O --> P["resize 缩小<br/>仍然是 BGR"]
+    P --> Q["cvtColor BGR2GRAY<br/>GRAY"]
+    Q --> R["GaussianBlur<br/>GRAY"]
+    R --> S["BlackHat<br/>GRAY"]
+    S --> T["threshold + Otsu<br/>Binary MASK"]
+    T --> U["findContours<br/>轮廓层级信息"]
+    U --> V["几何筛选 / 孔洞筛选 / 黑度筛选"]
+    V --> W["best_center<br/>输出坐标"]
 
-    E -. "同步抓帧兜底" .-> W["capture_bgr / capture_array"]
-    W --> X{"ndim == 3?"}
-    X -- 是 --> Y["直接返回 BGR"]
-    X -- 否 --> Z["YUV420p2BGR"]
-    Z --> Y
+    F -. "同步抓帧兜底" .-> X["capture_bgr / capture_array"]
+    X --> Y{"ndim == 3?"}
+    Y -- 是 --> Z["直接返回 BGR"]
+    Y -- 否 --> AA["YUV420p2BGR"]
+    AA --> Z
 ```
 
 ## 关键说明
 
-- 在 [camera.py](/home/wrf/Desktop/25e/25etest/Drivers/camera.py) 中，`main={"size": self.main_size, "format": "BGR888"}` 是当前主链路格式的核心声明。
+- 这张图最前面的链路现在明确区分了：
+  `Sensor 原始输出` 是 `RAW Bayer (GBRG, 10-bit)`，不是 `BGR`。
+- 在 [camera.py](/home/wrf/Desktop/25e/25etest/Drivers/camera.py) 中，`main={"size": self.main_size, "format": "BGR888"}` 才是上层主图像流的格式声明。
 - 这张图现在表达的是“先采集，再分流”：
   - 一路去 `DrmPreview` 做显示
   - 一路去 `post_callback` 进入识别
@@ -56,7 +59,7 @@ BGR888 -> BGR(ROI/resize后仍是BGR) -> GRAY -> GRAY(blur/blackhat后仍是GRAY
 ## 识别链路中的格式变化解释
 
 - `frame_bgr`
-  来源于 `post_callback -> MappedArray -> copy`，格式是 `BGR888`
+  来源于 `RAW Bayer -> ISP -> BGR888 main stream -> post_callback -> MappedArray -> copy`，格式是 `BGR888`
 - `ROI 裁剪`
   只改变图像空间范围，不改变颜色空间，结果仍然是 `BGR`
 - `resize`
